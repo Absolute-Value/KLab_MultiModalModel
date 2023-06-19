@@ -3,7 +3,7 @@ import torch
 import torch.distributed as dist
 import numpy as np
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AutoImageProcessor, AutoTokenizer
+from transformers import AutoTokenizer
 from tqdm import tqdm
 
 from data import *
@@ -14,11 +14,11 @@ def train():
     dist.init_process_group("nccl")
     rank = dist.get_rank()
 
-    # create model and move it to GPU with id rank
-    device_id = rank % torch.cuda.device_count()
-
     args = parse_arguments()
-    os.makedirs(args.result_dir, exist_ok=True)
+    args.world_size = torch.cuda.device_count() # GPU数
+    device_id = rank % args.world_size
+
+    if rank == 0: os.makedirs(args.result_dir, exist_ok=True)
 
     torch.manual_seed(args.seed)
     torch.backends.cudnn.benchmark = False
@@ -34,11 +34,10 @@ def train():
     scheduler = get_scheduler(args, optimizer)
 
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-    image_processor = AutoImageProcessor.from_pretrained(args.image_model_name)
-    tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512)
+    tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512, use_fast=True)
 
     # データの設定
-    train_loader, val_loader = get_dataloader(args, phase="train", rank=rank), get_dataloader(args, phase="val", rank=rank)
+    train_loader, val_loader = get_data(args, rank=rank)
 
     if args.num_epochs is None:
         args.num_epochs = int(args.num_steps / len(train_loader)) + 1
@@ -54,21 +53,22 @@ def train():
         train_count = torch.tensor(0).to(device_id)
         pbar = tqdm(total=int(np.ceil(len(train_loader)/args.accumulation_steps)), desc=f'Train (Epoch {epoch}/{args.num_epochs})', disable=(rank != 0))
         for i, (images, src_texts, tgt_texts) in enumerate(train_loader):
-            images = image_processor(images, return_tensors="pt").to(device_id)
-            source_encoding = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt').to(device_id) # ['pt', 'tf', 'np', 'jax']
-            target_encoding = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt').to(device_id) # ['pt', 'tf', 'np', 'jax']
-            loss = model(images, source_encoding, target_encoding)
+            if i % args.accumulation_steps == 0:
+                optimizer.zero_grad()
+            images = images.to(device_id)
+            src_texts = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            tgt_texts = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            loss = model(images, src_texts, tgt_texts)
 
             loss /= args.accumulation_steps
             loss.backward()
 
-            train_loss += loss.item() * images["pixel_values"].size(0)
-            train_count += images["pixel_values"].size(0)
+            train_loss += loss.item() * images.shape[0]
+            train_count += images.shape[0]
 
             # args.accumulation_steps回の勾配を蓄積してから、optimizer.step()を呼び出す
             if (i + 1) % args.accumulation_steps == 0 or i + 1 == len(train_loader):
                 optimizer.step()
-                optimizer.zero_grad()
                 pbar.update(1)
                 if rank == 0: steps += 1
 
@@ -92,13 +92,14 @@ def train():
         val_loop = tqdm(val_loader, desc=f'Val (Epoch {epoch}/{args.num_epochs})', disable=(rank != 0))
         for images, src_texts, tgt_texts in val_loop:
             with torch.no_grad():
-                images = image_processor(images, return_tensors="pt").to(device_id)
-                source_encoding = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt').to(device_id) # ['pt', 'tf', 'np', 'jax']
-                target_encoding = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt').to(device_id) # ['pt', 'tf', 'np', 'jax']
-                loss = model(images, source_encoding, target_encoding)
+                images = images.to(device_id)
+                src_texts = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                tgt_texts = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                loss = model(images, src_texts, tgt_texts)
                 
-                val_loss += loss.item() * images["pixel_values"].size(0)
-                val_count += images["pixel_values"].size(0)
+                val_loss += loss.item() * images.shape[0]
+                val_count += images.shape[0]
+
         # 他のノードから集める
         dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
         dist.all_reduce(val_count, op=dist.ReduceOp.SUM)
