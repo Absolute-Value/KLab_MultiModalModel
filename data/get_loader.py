@@ -5,6 +5,7 @@ from .coco import COCODatasetLoader
 from .vcr import Vcrdataset
 from .vqa2 import Vqa2dataset
 from .imSitu import imSituDataset
+from .oidv7 import OpenImageDataset_Caption
 
 def get_dataloader(args, phase, rank):
     dataset = get_dataset(args,phase)
@@ -24,6 +25,8 @@ def get_dataset(args, phase):
         dataset = Vqa2dataset(args.data_dir,phase=phase)
     elif 'imsitu' in args.data_dir.lower():
         dataset = imSituDataset(args.data_dir,phase=phase)
+    elif 'openimage' in args.data_dir.lower():
+        dataset = OpenImageDataset_Caption(args.data_dir,phase=phase)
     else:
         raise NotImplementedError
     return dataset
