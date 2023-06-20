@@ -3,6 +3,7 @@ from .caption import *
 from .image_classify import *
 from .vqa import *
 from .pretrain import *
+from .relationship import *
 
 def get_data(args, rank):
     if 'redcaps' in args.data_dir.lower():
@@ -44,7 +45,7 @@ def get_dataset(args, phase="train"):
         elif 'imagenet' in args.data_dir.lower():
             dataset = ImageNetDatasetLoader(args.data_dir, phase=phase)
         elif 'openimage' in args.data_dir.lower():
-            dataset = OpenImageDataset_Caption(args.data_dir, phase=phase)
+            dataset = OpenImageDataset_relation(args.data_dir, phase=phase)
         else:
             raise NotImplementedError
     return dataset
