@@ -1,10 +1,4 @@
 import torch
-from .redcaps import RedCapsDatasetLoader
-from .coco import COCODatasetLoader
-from .vcr import Vcrdataset
-from .vqa2 import Vqa2dataset
-from .imSitu import imSituDataset
-from .oidv7 import OpenImageDataset_Caption
 from .caption import *
 from .image_classify import *
 from .vqa import *
@@ -30,19 +24,12 @@ def get_dataloader(args, dataset, rank):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=2, pin_memory=True, sampler=sampler)
     return dataloader
 
-def get_dataset(args, phase):
-    if 'mscoco' in args.data_dir.lower():
-        dataset = COCODatasetLoader(args.data_dir, phase)
-    elif 'redcaps' in args.data_dir.lower():
-        dataset = RedCapsDatasetLoader(args.data_dir, phase)
-    elif 'vcr' in args.data_dir.lower():
-        dataset = Vcrdataset(args.data_dir,phase=phase)
-    elif 'vqa2' in args.data_dir.lower():
-        dataset = Vqa2dataset(args.data_dir,phase=phase)
-    elif 'imsitu' in args.data_dir.lower():
-        dataset = imSituDataset(args.data_dir,phase=phase)
-    elif 'openimage' in args.data_dir.lower():
-        dataset = OpenImageDataset_Caption(args.data_dir,phase=phase)
+def get_dataset(args, phase="train"):
+    if args.pretrain: # 事前学習だったら
+        if 'redcaps' in args.data_dir.lower():
+            dataset = RedCapsPretrainDatasetLoader(args.data_dir)
+        else:
+            raise NotImplementedError
     else:
         if 'mscoco' in args.data_dir.lower():
             dataset = COCODatasetLoader(args.data_dir, phase)
@@ -54,10 +41,10 @@ def get_dataset(args, phase):
             dataset = Vqa2dataset(args.data_dir, phase=phase)
         elif 'imsitu' in args.data_dir.lower():
             dataset = imSituDataset(args.data_dir, phase=phase)
-        elif 'openimage' in args.data_dir.lower():
-            dataset = OpenImageDataset_Caption(args.data_dir,phase=phase)
         elif 'imagenet' in args.data_dir.lower():
             dataset = ImageNetDatasetLoader(args.data_dir, phase=phase)
+        elif 'openimage' in args.data_dir.lower():
+            dataset = OpenImageDataset_Caption(args.data_dir, phase=phase)
         else:
             raise NotImplementedError
     return dataset
