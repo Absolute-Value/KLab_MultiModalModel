@@ -8,7 +8,7 @@ import random
 
 
 class OpenImageDataset_relation(torch.utils.data.Dataset):
-    def __init__(self,data_dir="/data/dataset/openimage",phase="train",imagesize=(256,256),is_mask=True):
+    def __init__(self,data_dir="/data/dataset/openimage/",phase="train",imagesize=(256,256)):
         if phase =="val":
             self.phase = "validation"
         else:
@@ -16,12 +16,13 @@ class OpenImageDataset_relation(torch.utils.data.Dataset):
         self.data_dir = data_dir
         self.transform = ToTensor()
         self.imagesize = imagesize
-        self.is_mask = is_mask
-
-        rel = pd.read_csv(f"/data/dataset/openimage/relation/oidv6-{self.phase}-annotations-vrd.csv")
+        anopath = os.path.join(self.data_dir,"relation",f"oidv6-{self.phase}-annotations-vrd.csv")
+        rel = pd.read_csv(anopath)
         #isは関係が崩壊しているので除外
         self.items = rel[rel['RelationshipLabel']!="is"] 
-        self.labels = pd.read_csv("/data/dataset/openimage/oidv7-class-descriptions.csv")
+        labels_path = os.path.join(self.data_dir,"oidv7-class-descriptions.csv")
+        self.labels = pd.read_csv(labels_path)
+        
     def _get_location(self,item):
         lb1_x1 = int(self.imagesize[0]*item['XMin1'])
         lb1_x2 = int(self.imagesize[0]*item['XMax1'])
@@ -42,12 +43,8 @@ class OpenImageDataset_relation(torch.utils.data.Dataset):
         loc1,loc2 = self._get_location(item)
         lb1 = f"\'loc{loc1[0]} loc{loc1[1]} loc{loc1[2]} loc{loc1[3]} {Label1}"
         lb2 = f"\'loc{loc2[0]} loc{loc2[1]} loc{loc2[2]} loc{loc2[3]} {Label2}"
-        if self.is_mask:
-            src_text = random.choice([f"<extra_id_1> {item['RelationshipLabel']} {Label2}",f"{Label1} {item['RelationshipLabel']} <extra_id_2>",f"<extra_id_1> {item['RelationshipLabel']} <extra_id_2>"])
-            tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
-        else:
-            src_text = f"What is the relationship between {lb1} and {lb2}"
-            tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
+        src_text = f"What is the relationship between {lb1} and {lb2}"
+        tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
         return image,src_text,tgt_text
 
     def get_all(self,idx:int):
@@ -59,12 +56,8 @@ class OpenImageDataset_relation(torch.utils.data.Dataset):
         loc1,loc2 = self._get_location(item)
         lb1 = f"\'loc{loc1[0]} loc{loc1[1]} loc{loc1[2]} loc{loc1[3]} {Label1}"
         lb2 = f"\'loc{loc2[0]} loc{loc2[1]} loc{loc2[2]} loc{loc2[3]} {Label2}"
-        if self.is_mask:
-            src_text = random.choice([f"<extra_id_1> {item['RelationshipLabel']} {Label2}",f"{Label1} {item['RelationshipLabel']} <extra_id_2>",f"<extra_id_1> {item['RelationshipLabel']} <extra_id_2>"])
-            tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
-        else:
-            src_text = f"What is the relationship between {lb1} and {lb2}"
-            tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
+        src_text = f"What is the relationship between {lb1} and {lb2}"
+        tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
         return image,src_text,tgt_text,loc1,loc2
 
     def __len__(self):

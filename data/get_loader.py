@@ -4,6 +4,7 @@ from .image_classify import *
 from .vqa import *
 from .pretrain import *
 from .relationship import *
+from .mask import *
 
 def get_data(args, rank):
     if 'redcaps' in args.data_dir.lower():
@@ -29,6 +30,8 @@ def get_dataset(args, phase="train"):
     if args.pretrain: # 事前学習だったら
         if 'redcaps' in args.data_dir.lower():
             dataset = RedCapsPretrainDatasetLoader(args.data_dir)
+        elif 'openimage' in args.data_dir.lower():
+            dataset = OpenImageDataset_relation_mask(args.data_dir, phase=phase)
         else:
             raise NotImplementedError
     else:
