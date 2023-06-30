@@ -10,7 +10,22 @@ from .utils import make_mask_textpair
 
 
 class OpenImageDataset_relation_mask(torch.utils.data.Dataset):
-    def __init__(self,data_dir="/data/dataset/openimage/",phase="train",imagesize=(256,256)):
+    """openimageのrelathionshipをマスクしたデータセット
+    """    
+    def __init__(self,data_dir:str="/data/dataset/openimage/",phase:str="train",imagesize:tuple[int,int]=(256,256)):
+        """コンストラクタ
+
+        Parameters
+        ----------
+        data_dir : str, optional
+            データセットのrootパス, by default "/data/dataset/openimage/"
+        phase : str, optional
+            フェイズ train,val,testから選択 , by default "train"
+        imagesize : tuple, optional
+            transformする画像のサイズ, by default (256,256)
+        """        
+        
+        #valでくるとデータパスでエラーがでるので回避
         if phase =="val":
             self.phase = "validation"
         else:
@@ -31,6 +46,7 @@ class OpenImageDataset_relation_mask(torch.utils.data.Dataset):
         image = self.transform(image)
         Label1 = self.labels[self.labels.LabelName==item["LabelName1"]].iloc[0,1]
         Label2 = self.labels[self.labels.LabelName==item["LabelName2"]].iloc[0,1]
+        #フルのリレーションからmaskされたソースとターゲットを作成
         src_text,tgt_text = make_mask_textpair(f"{Label1} {item['RelationshipLabel']} {Label2}.")
         # src_text,tgt_text = utils.make_mask_textpair(f"{Label1} {item['RelationshipLabel']} {Label2}.")
         return image,src_text,tgt_text
@@ -41,6 +57,7 @@ class OpenImageDataset_relation_mask(torch.utils.data.Dataset):
 
 
 if __name__ =="__main__":
+    #ローカルで動かす場合は、.utilsをコメントアウトして、import utilsを有効にする
     from PIL import ImageDraw
     import torchvision
     dataset = OpenImageDataset_relation_mask("/local_data1/openimage",phase="train")
@@ -48,13 +65,4 @@ if __name__ =="__main__":
         print(f"{i}:{dataset[i][1]}")
 
 
-    # for i,data in enumerate(dataset):
-    #     print(i)
-    # data = dataset.get_all(idx=index)
-    # p = torchvision.transforms.functional.to_pil_image(data[0])
-    # draw = ImageDraw.Draw(p)
-    # draw.rectangle(data[3])
-    # p.show()
-    # print(f"q:{data[1]}")
-    # print(f"a:{data[2]}")
     

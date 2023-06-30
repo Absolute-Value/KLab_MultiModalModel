@@ -8,7 +8,22 @@ import random
 
 
 class OpenImageDataset_relation(torch.utils.data.Dataset):
-    def __init__(self,data_dir="/data/dataset/openimage/",phase="train",imagesize=(256,256)):
+    """openimageのrelathionship用データセット
+    """
+    def __init__(self,data_dir:str="/data/dataset/openimage/",phase:str="train",imagesize:tuple[int,int]=(256,256)):
+        """コンストラクタ
+
+        Parameters
+        ----------
+        data_dir : str, optional
+            データのrootパス, by default "/data/dataset/openimage/"
+        phase : str, optional
+            フェイズ train val test, by default "train"
+        imagesize : tuple[int,int], optional
+            transformするイメージのサイズ, by default (256,256)
+        """        
+
+        #valでくるとデータパスでエラーがでるので回避
         if phase =="val":
             self.phase = "validation"
         else:
@@ -16,14 +31,26 @@ class OpenImageDataset_relation(torch.utils.data.Dataset):
         self.data_dir = data_dir
         self.transform = ToTensor()
         self.imagesize = imagesize
-        anopath = os.path.join(self.data_dir,"relation",f"oidv6-{self.phase}-annotations-vrd.csv")
+        anopath = os.path.join(self.data_dir,"relation",f"oidv6-{self.phase}-annotations-vrd-fix.csv")
         rel = pd.read_csv(anopath)
         #isは関係が崩壊しているので除外
         self.items = rel[rel['RelationshipLabel']!="is"] 
         labels_path = os.path.join(self.data_dir,"oidv7-class-descriptions.csv")
         self.labels = pd.read_csv(labels_path)
         
-    def _get_location(self,item):
+    def _get_location(self,item:dict)->list[tuple[int,int,int,int],tuple[int,int,int,int]]:
+        """物のロケーションを取得する
+
+        Parameters
+        ----------
+        item : dict
+            画像の情報
+
+        Returns
+        -------
+        list[tuple[int,int,int,int],tuple[int,int,int,int]]
+            Labelname1の座標、Labelname1の座標
+        """        
         lb1_x1 = int(self.imagesize[0]*item['XMin1'])
         lb1_x2 = int(self.imagesize[0]*item['XMax1'])
         lb1_y1 = int(self.imagesize[1]*item['YMin1'])
@@ -35,22 +62,14 @@ class OpenImageDataset_relation(torch.utils.data.Dataset):
         return (lb1_x1,lb1_y1,lb1_x2,lb1_y2),(lb2_x1,lb2_y1,lb2_x2,lb2_y2)
 
     def __getitem__(self,idx):
-        item= deepcopy(self.items.iloc[idx])
-        image = Image.open(os.path.join(f'{self.data_dir}',self.phase,f"{item['ImageID']}.jpg")).convert("RGB").resize(self.imagesize)
-        image = self.transform(image)
-        Label1 = self.labels[self.labels.LabelName==item["LabelName1"]].iloc[0,1]
-        Label2 = self.labels[self.labels.LabelName==item["LabelName2"]].iloc[0,1]
-        loc1,loc2 = self._get_location(item)
-        lb1 = f"\'loc{loc1[0]} loc{loc1[1]} loc{loc1[2]} loc{loc1[3]} {Label1}"
-        lb2 = f"\'loc{loc2[0]} loc{loc2[1]} loc{loc2[2]} loc{loc2[3]} {Label2}"
-        src_text = f"What is the relationship between {lb1} and {lb2}"
-        tgt_text = f"{Label1} {item['RelationshipLabel']} {Label2}"
+        image,src_text,tgt_text,_,_ = self.get_all(idx)
         return image,src_text,tgt_text
 
     def get_all(self,idx:int):
         item= deepcopy(self.items.iloc[idx])
         image = Image.open(os.path.join(f'{self.data_dir}',self.phase,f"{item['ImageID']}.jpg")).convert("RGB").resize(self.imagesize)
         image = self.transform(image)
+        #MIDからオブジェクトラベルを取得
         Label1 = self.labels[self.labels.LabelName==item["LabelName1"]].iloc[0,1]
         Label2 = self.labels[self.labels.LabelName==item["LabelName2"]].iloc[0,1]
         loc1,loc2 = self._get_location(item)
