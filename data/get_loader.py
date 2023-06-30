@@ -5,6 +5,7 @@ from .vqa import *
 from .pretrain import *
 from .relationship import *
 from .mask import *
+from .detection import *
 
 def get_data(args, rank):
     if 'redcaps' in args.data_dir.lower():
