@@ -1,11 +1,11 @@
-batch_size=128
+batch_size=8
 for model in "google/flan-t5-small"
 do
 torchrun --nnodes=1 --nproc_per_node=4 train.py \
         --image_model_train \
         --language_model_name google/flan-t5-base \
         --ffn \
-        --pretrain \
+        --max_target_length 256 \
         --transformer_model_name $model \
         --lr 0.001 \
         --optimizer AdamW \
@@ -13,5 +13,5 @@ torchrun --nnodes=1 --nproc_per_node=4 train.py \
         --num_epochs 20 \
         --save_interval 2 \
         --data_dir /local_data1/openimage \
-        --result_dir results/mask/tokenizertest/
+        --result_dir results/detection/
 done

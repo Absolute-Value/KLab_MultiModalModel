@@ -27,15 +27,15 @@ def train():
     if rank == 0: logger = get_logger(args)
 
     # create model
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    tokenizer_src = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512, use_fast=True)
+    tokenizer_tgt = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512,use_fast=True,additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(1000)])
     model = MyModel(args).to(device_id)
+    model.resize_token_embeddings(len(tokenizer_tgt))
     model = DDP(model, device_ids=[device_id])
     
     optimizer = get_optimizer(model, args)
     scheduler = get_scheduler(args, optimizer)
-
-    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-    tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512, use_fast=True)
-
     # データの設定
     train_loader, val_loader = get_data(args, rank=rank)
 
@@ -56,8 +56,8 @@ def train():
             if i % args.accumulation_steps == 0:
                 optimizer.zero_grad()
             images = images.to(device_id)
-            src_texts = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-            tgt_texts = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            src_texts = tokenizer_src(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            tgt_texts = tokenizer_tgt(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
             loss = model(images, src_texts, tgt_texts)
 
             loss /= args.accumulation_steps
@@ -93,8 +93,8 @@ def train():
         for images, src_texts, tgt_texts in val_loop:
             with torch.no_grad():
                 images = images.to(device_id)
-                src_texts = tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-                tgt_texts = tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                src_texts = tokenizer_src(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                tgt_texts = tokenizer_tgt(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
                 loss = model(images, src_texts, tgt_texts)
                 
                 val_loss += loss.item() * images.shape[0]

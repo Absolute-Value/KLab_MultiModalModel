@@ -24,7 +24,7 @@ def get_data(args, rank):
     
 def get_dataloader(args, dataset, rank):
     sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=torch.cuda.device_count(), rank=rank, shuffle=True, drop_last=True)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=2, pin_memory=True, sampler=sampler)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=20, pin_memory=True, sampler=sampler)
     return dataloader
 
 def get_dataset(args, phase="train"):
@@ -49,7 +49,7 @@ def get_dataset(args, phase="train"):
         elif 'imagenet' in args.data_dir.lower():
             dataset = ImageNetDatasetLoader(args.data_dir, phase=phase)
         elif 'openimage' in args.data_dir.lower():
-            dataset = OpenImageDataset_relation(args.data_dir, phase=phase)
+            dataset = OpenImageDataset_detection(args.data_dir, phase=phase)
         else:
             raise NotImplementedError
     return dataset

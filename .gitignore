@@ -5,6 +5,7 @@ __pycache__/
 .ipynb_checkpoints
 try.ipynb
 work.ipynb
+work.py
 
 # result files
 results*/

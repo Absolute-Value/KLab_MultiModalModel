@@ -60,3 +60,6 @@ class MyModel(nn.Module):
         if self.args.ffn:
             self.language_ffn.load_state_dict(checkpoints['language_ffn'])
             self.image_ffn.load_state_dict(checkpoints['image_ffn'])
+    
+    def resize_token_embeddings(self, new_num_tokens):
+        self.transformer.resize_token_embeddings(new_num_tokens)
