@@ -32,4 +32,6 @@ class OpenImageDataset_Caption(torch.utils.data.Dataset):
 
 if __name__ =="__main__":
     dataset = OpenImageDataset_Caption(phase="val")
+    data = dataset[0]
+    print(data)
     

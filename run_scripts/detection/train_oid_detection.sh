@@ -1,4 +1,4 @@
-batch_size=8
+batch_size=32
 for model in "google/flan-t5-small"
 do
 torchrun --nnodes=1 --nproc_per_node=4 train.py \
@@ -11,7 +11,7 @@ torchrun --nnodes=1 --nproc_per_node=4 train.py \
         --optimizer AdamW \
         --batch_size $batch_size \
         --num_epochs 20 \
-        --save_interval 2 \
+        --save_interval 5 \
         --data_dir /local_data1/openimage \
-        --result_dir results/detection/
+        --result_dir results/detection/fixdata/
 done
