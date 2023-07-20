@@ -22,10 +22,8 @@ class OpenImageDataset_detection(torch.utils.data.Dataset):
         self.imagesize = imagesize
         self.transform = ToTensor()
 
-        datapath = os.path.join(data_dir,"bbox",f"{self.phase}_detection_256.csv")
+        datapath = os.path.join(data_dir,"bbox",f"{self.phase}_detection_40.csv")
         self.df = pd.read_csv(datapath)
-        #グループの画像を除外する場合はコメントアウコメントを外す
-        # self.df = self.df[self.df['IsGroupOf']==0]
         #dropimageidlistに含まれる画像を除外する
         self.df = self.df[self.df["imageID"].isin(dropimageidlist)==False]
         leabelpath = os.path.join(data_dir,"oidv7-class-descriptions.csv")

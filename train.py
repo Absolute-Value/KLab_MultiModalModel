@@ -29,7 +29,7 @@ def train():
     # create model
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     tokenizer_src = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512, use_fast=True)
-    tokenizer_tgt = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512,use_fast=True,additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(1000)])
+    tokenizer_tgt = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512,use_fast=True,additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(1600)])
     model = MyModel(args).to(device_id)
     model.resize_token_embeddings(len(tokenizer_tgt))
     model = DDP(model, device_ids=[device_id])
