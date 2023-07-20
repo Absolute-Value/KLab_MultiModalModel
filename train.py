@@ -28,14 +28,17 @@ def train():
 
     # create model
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-    tokenizer_src = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512, use_fast=True)
-    tokenizer_tgt = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=512,use_fast=True,additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(1600)])
     model = MyModel(args).to(device_id)
     model.resize_token_embeddings(len(tokenizer_tgt))
     model = DDP(model, device_ids=[device_id])
     
     optimizer = get_optimizer(model, args)
     scheduler = get_scheduler(args, optimizer)
+
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    src_tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=256, use_fast=True)
+    tgt_tokenizer = AutoTokenizer.from_pretrained(args.transformer_model_name, model_max_length=256, use_fast=True, extra_ids=0, additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(args.loc_vocab_size)] + [f"<img_{i}>" for i in range(args.image_vocab_size)])
+
     # データの設定
     train_loader, val_loader = get_data(args, rank=rank)
 
@@ -55,10 +58,14 @@ def train():
         for i, (images, src_texts, tgt_texts) in enumerate(train_loader):
             if i % args.accumulation_steps == 0:
                 optimizer.zero_grad()
-            images = images.to(device_id)
-            src_texts = tokenizer_src(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-            tgt_texts = tokenizer_tgt(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-            loss = model(images, src_texts, tgt_texts)
+            src_images = src_images.to(device_id)
+            if args.pretrain:
+                tgt_images = tgt_images.to(device_id)
+                tgt_texts, _ = model.module.image_to_z(tgt_images)
+
+            src_texts = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            tgt_texts = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+            loss = model(src_images, src_texts, tgt_texts)
 
             loss /= args.accumulation_steps
             loss.backward()
@@ -71,6 +78,8 @@ def train():
                 optimizer.step()
                 pbar.update(1)
                 if rank == 0: steps += 1
+                if args.num_epochs is None:
+                    scheduler.step()
 
         # 他のノードから集める
         dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
@@ -80,7 +89,7 @@ def train():
             train_loss /= train_count
             loss_counter.add("train", train_loss.cpu().numpy().copy())
 
-        if args.lr_scheduler != '':
+        if args.lr_scheduler != '' and args.num_steps is None:
             scheduler.step()
         pbar.close()
         # 検証ループ
@@ -92,10 +101,13 @@ def train():
         val_loop = tqdm(val_loader, desc=f'Val (Epoch {epoch}/{args.num_epochs})', disable=(rank != 0))
         for images, src_texts, tgt_texts in val_loop:
             with torch.no_grad():
-                images = images.to(device_id)
-                src_texts = tokenizer_src(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-                tgt_texts = tokenizer_tgt(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
-                loss = model(images, src_texts, tgt_texts)
+                src_images = src_images.to(device_id)
+                if args.pretrain:
+                    tgt_images = tgt_images.to(device_id)
+                    tgt_texts, _ = model.module.image_to_z(tgt_images)
+                src_texts = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                tgt_texts = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(device_id) # ['pt', 'tf', 'np', 'jax']
+                loss = model(src_images, src_texts, tgt_texts)
                 
                 val_loss += loss.item() * images.shape[0]
                 val_count += images.shape[0]
@@ -107,7 +119,7 @@ def train():
         if rank == 0:
             val_loss /= val_count
             loss_counter.add("val", val_loss.cpu().numpy().copy())
-            logger.info(f'[Epoch ({epoch}/{args.num_epochs})] Train loss : {train_loss}, Val loss : {val_loss}')
+            logger.info(f'[Epoch ({epoch}/{args.num_epochs})] Train loss : {train_loss}, Val loss : {val_loss}, Steps : {steps}')
         
             if val_loss < min_val_loss:
                 min_val_loss = val_loss
