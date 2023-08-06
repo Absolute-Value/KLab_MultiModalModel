@@ -26,18 +26,18 @@ def train():
 
     if rank == 0: logger = get_logger(args)
 
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    src_tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=256, use_fast=True)
+    tgt_tokenizer = AutoTokenizer.from_pretrained(args.transformer_model_name, model_max_length=256, use_fast=True, extra_ids=0, additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(args.loc_vocab_size)] + [f"<img_{i}>" for i in range(args.image_vocab_size)])
+    
     # create model
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     model = MyModel(args).to(device_id)
-    model.resize_token_embeddings(len(tokenizer_tgt))
+    model.resize_token_embeddings(len(tgt_tokenizer))
     model = DDP(model, device_ids=[device_id])
     
     optimizer = get_optimizer(model, args)
     scheduler = get_scheduler(args, optimizer)
-
-    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-    src_tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=256, use_fast=True)
-    tgt_tokenizer = AutoTokenizer.from_pretrained(args.transformer_model_name, model_max_length=256, use_fast=True, extra_ids=0, additional_special_tokens =[f"<extra_id_{i}>" for i in range(100)] + [f"<loc_{i}>" for i in range(args.loc_vocab_size)] + [f"<img_{i}>" for i in range(args.image_vocab_size)])
 
     # データの設定
     train_loader, val_loader = get_data(args, rank=rank)
