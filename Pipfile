@@ -12,6 +12,7 @@ pycocotools = "*"
 notebook = "*"
 ipykernel = "*"
 matplotlib = "*"
+torchvision = "*"
 
 [dev-packages]
 
