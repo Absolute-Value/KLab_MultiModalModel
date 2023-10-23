@@ -6,13 +6,16 @@ name = "pip_conf_index_global"
 [packages]
 accelerate = "*"
 datasets = "*"
-transformers = "*"
 sentencepiece = "*"
 pycocotools = "*"
 notebook = "*"
 ipykernel = "*"
 matplotlib = "*"
 torchvision = "*"
+numpy = "*"
+wandb = "*"
+transformers = {extras = ["torch"], version = "*"}
+hydra-core = "*"
 
 [dev-packages]
 
