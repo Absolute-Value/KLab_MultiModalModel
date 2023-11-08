@@ -16,7 +16,7 @@ numpy = "*"
 wandb = "*"
 transformers = {extras = ["torch"] }
 hydra-core = "*"
-seqio = "*"
+#seqio = "*"
 
 [dev-packages]
 
