@@ -14,8 +14,9 @@ matplotlib = "*"
 torchvision = "*"
 numpy = "*"
 wandb = "*"
-transformers = {extras = ["torch"], version = "*"}
+transformers = {extras = ["torch"] }
 hydra-core = "*"
+seqio = "*"
 
 [dev-packages]
 
