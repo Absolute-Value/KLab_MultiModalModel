@@ -1,0 +1,24 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = false
+name = "pip_conf_index_global"
+
+[packages]
+accelerate = "*"
+datasets = "*"
+sentencepiece = "*"
+pycocotools = "*"
+notebook = "*"
+ipykernel = "*"
+matplotlib = "*"
+torchvision = "*"
+numpy = "*"
+wandb = "*"
+transformers = {extras = ["torch"] }
+hydra-core = "*"
+seqio = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.10"
