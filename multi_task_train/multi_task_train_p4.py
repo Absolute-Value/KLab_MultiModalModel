@@ -255,6 +255,7 @@ def train():
                     sample_max_data_flag = True
                     break
             if sample_max_data_flag:
+                logger.info(f"stop step:{step}")
                 break
 
             

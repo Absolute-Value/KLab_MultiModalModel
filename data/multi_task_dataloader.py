@@ -424,3 +424,28 @@ class MultiTaskDataLoader4:
     def set_epoch(self, epoch: int):
         for sampler in self.distributed_sampler_dict.values():
             sampler.set_epoch(epoch)
+
+class DataNumCounter():
+    def __init__(self,max_data_num_dict,one_gpu_batch_size_dict,each_task_sample_num_dict,world_size) -> None:
+        self.one_gpu_max_data_num_dict = {k: v // world_size for k, v in max_data_num_dict.items()}
+        self.one_gpu_data_num_per_step_dict = {k: v * one_gpu_batch_size_dict[k] for k, v in each_task_sample_num_dict.items()}
+        self.max_step_dict = {k: v // self.one_gpu_data_num_per_step_dict[k] for k, v in self.one_gpu_max_data_num_dict.items()}
+        
+        self.accumulate_data_num_dict = {k:0 for k in self.one_gpu_data_num_per_step_dict.keys()}
+        self.sample_max_data_flag = False
+        self.step = 0
+        
+    def update(self):
+        self.step += 1
+        self.accumulate_data_num_dict = {k: v + self.one_gpu_data_num_per_step_dict[k] for k, v in self.accumulate_data_num_dict.items()}
+        for task, data_num in self.one_gpu_max_data_num_dict.items():
+            if self.accumulate_data_num_dict[task] <= data_num:
+                continue
+            else:
+                self.sample_max_data_flag = True
+                
+    def reset(self):
+        self.accumulate_data_num_dict = {k:0 for k in self.one_gpu_data_num_per_step_dict.keys()}
+        self.sample_max_data_flag = False
+        self.step = 0
+            

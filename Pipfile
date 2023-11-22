@@ -17,6 +17,7 @@ wandb = "*"
 transformers = {extras = ["torch"] }
 hydra-core = "*"
 #seqio = "*"
+pycocoevalcap = "*"
 
 [dev-packages]
 

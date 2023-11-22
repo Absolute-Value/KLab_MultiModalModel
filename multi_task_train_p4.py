@@ -1,52 +1,85 @@
 import os
 import pkgutil
 import random
-from typing import Any, Callable, Dict, List
+from typing import List
 
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
+import torchvision
+from PIL import Image
+from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import ConcatDataset, DataLoader, Subset
+from torch.utils.data import ConcatDataset, Subset
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from data import *
-from data.multi_task_dataloader import MultiTaskDataLoader4, get_multi_task_data, make_multi_task_collate_fn
+from data.multi_task_dataloader import DataNumCounter, MultiTaskDataLoader4, get_multi_task_data
 from models.model import MyModel
 from modules import *
 
-# def get_dataset_dict(args, dataset_name_dict: dict[str, List[str]], phase, subset_size,src_tokenizer=None, tgt_tokenizer=None,):
-#     dataset_dict = {
-#         key: ConcatDataset(
-#             [
-#                 Subset(
-#                     get_dataset(
-#                         args,
-#                         dataset_name,
-#                         phase=phase,
-#                         src_tokenizer=src_tokenizer,
-#                         tgt_tokenizer=tgt_tokenizer,
-#                     ),
-#                     indices=range(0, subset_size),
-#                 )
-#                 for dataset_name in dataset_name_dict[key]
-#             ]
-#         )
-#         for key in dataset_name_dict.keys()
-#     }
-#     return dataset_dict
+DATASET_MEAN=[0.485, 0.456, 0.406]
+DATASET_STD=[0.229, 0.224, 0.225]
+##----------------------------------------------------
+# 画像とキャプションの表示するための関数
+# def initialize_get_natural_img
+def get_natural_img(img: Tensor | Image.Image, mean: tuple[float, float, float], std: tuple[float, float, float]) -> Image.Image:
+    """tensor型のimgを表示する
+        https://dev.classmethod.jp/articles/check_image_variable_type/#toc-5
+        https://teratail.com/questions/232436
+
+    Args:
+        tensor_img (Tensor): _description_
+        mean (tuple[float,float,float]): _description_
+        std (tuple[float,float,float]): _description_
+    """
+
+    if isinstance(img, Tensor):
+        tensor_img = img
+        # 平均と分散の(3,1,1)の行列を作成=画像のRGBに対応
+        mean_tensor: Tensor = torch.tensor(mean).view(3, 1, 1).to(img.device)
+        std_tensor: Tensor = torch.tensor(std).view(3, 1, 1).to(img.device)
+
+        natural_img =  torchvision.transforms.functional.to_pil_image(tensor_img.clone().detach().mul(std_tensor).add(mean_tensor).to("cpu"), mode="RGB")
+
+        return natural_img
+    elif isinstance(img, Image.Image):
+        # tensor_img = img_transforms.functional.to_tensor(img)
+
+        return img
+    else:
+        raise TypeError("Input type not supported")
+    
+def get_dataset_dict(args, dataset_name_dict: dict[str, List[str]], phase, subset_size,src_tokenizer=None, tgt_tokenizer=None,):
+    dataset_dict = {
+        key: ConcatDataset(
+            [
+                Subset(
+                    get_dataset(
+                        args,
+                        dataset_name,
+                        phase=phase,
+                        src_tokenizer=src_tokenizer,
+                        tgt_tokenizer=tgt_tokenizer,
+                    ),
+                    indices=range(0, subset_size),
+                )
+                for dataset_name in dataset_name_dict[key]
+            ]
+        )
+        for key in dataset_name_dict.keys()
+    }
+    return dataset_dict
 
 
-# def get_multi_task_data(args, train_dataset_name_dict, val_dataset_name_dict, src_tokenizer=None, tgt_tokenizer=None):
-#     if len(train_dataset_name_dict) == 0:
-#         raise ValueError
-#     train_dataset_dict, val_dataset_dict = {}, {}
-#     train_dataset_dict = get_dataset_dict(args, train_dataset_name_dict, phase="train", src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
-#     val_dataset_dict = get_dataset_dict(args, val_dataset_name_dict, phase="val", src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
-#     return train_dataset_dict, val_dataset_dict
-
+def get_multi_task_data(args, train_dataset_name_dict, val_dataset_name_dict, src_tokenizer=None, tgt_tokenizer=None):
+    if len(train_dataset_name_dict) == 0:
+        raise ValueError
+    train_dataset_dict, val_dataset_dict = {}, {}
+    train_dataset_dict = get_dataset_dict(args, train_dataset_name_dict, phase="train",subset_size=80000, src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
+    val_dataset_dict = get_dataset_dict(args, val_dataset_name_dict, phase="val", subset_size=10000,src_tokenizer=src_tokenizer, tgt_tokenizer=tgt_tokenizer)
+    return train_dataset_dict, val_dataset_dict
 
 use_wandb = False
 if pkgutil.find_loader("wandb") is not None:
@@ -92,13 +125,13 @@ def train():
     # create model
     model = MyModel(args).to(local_rank)
     if args.start_epoch > 1:
-        model.load(result_name='best.pth')
-    model = DDP(model, device_ids=[local_rank])  # ,find_unused_parameters=True)
-
+        model.load(result_name=f'epoch_{args.start_epoch-1}.pth' if args.save_interval is not None else 'best.pth')
+    model = DDP(model, device_ids=[local_rank])#,find_unused_parameters=True)
+    
     scaler = torch.cuda.amp.GradScaler(enabled=True if args.float_type == 'float16' else False)
     optimizer = get_optimizer(model, args)
     if args.start_epoch > 1:
-        optimizer.load_state_dict(torch.load(os.path.join(args.result_dir, 'best.optimizer')))
+        optimizer.load_state_dict(torch.load(os.path.join(args.result_dir, f'epoch_{args.start_epoch-1}.optimizer' if args.save_interval is not None else 'best.optimizer')))
 
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     tgt_tokenizer = AutoTokenizer.from_pretrained(
@@ -115,27 +148,34 @@ def train():
     else:
         src_tokenizer = AutoTokenizer.from_pretrained(args.language_model_name, model_max_length=args.max_source_length, use_fast=True)
 
-    ## --  データの設定
-    # train_dataset, val_dataset = get_data(args, src_tokenizer, tgt_tokenizer)
-    # if world_rank == 0:
-    #     logger.info(f'Train Dataset : {len(train_dataset)}, Val Dataset : {len(val_dataset)}')
-    # train_loader = get_distributed_dataloader(args, train_dataset, shuffle=True)
-    # val_loader = get_distributed_dataloader(args, val_dataset, shuffle=False)
-
+    # データの設定
     # 引数の設定
+    world_size = dist.get_world_size()
     train_dataset_name_dict = {"caption": ["cc3m"], "classify": ["imagenet", "sun397"]}
     val_dataset_name_dict = {"caption": ["cc3m"], "classify": ["imagenet", "sun397"]}
-    batch_size_dict = {"caption": 5, "classify": 10}
-
+    one_gpu_batch_size_dict = {"caption": 16, "classify": 32} #1gpuのバッチサイズ
+    each_task_sample_num_dict = {"caption":4,"classify":2}#何回タスクごとにバッチを取得するか
+    max_data_num_dict = {"caption": 40000, "classify": 40000} #使用するデータ数の上限、subsetで上限最大値caption80000, classify160000
+    
+    args.accumulation_steps = sum(each_task_sample_num_dict.values()) #何回タスクごとにバッチを取得するか
+    data_num_counter = DataNumCounter(max_data_num_dict,one_gpu_batch_size_dict,each_task_sample_num_dict,world_size)
+    # one_gpu_max_data_num_dict = {k: v // world_size for k, v in max_data_num_dict.items()}
+    # one_gpu_data_num_per_step_dict = {k: v * one_gpu_batch_size_dict[k] for k, v in each_task_sample_num_dict.items()}
+    
+    if world_rank == 0:
+        logger.info(f"accumulation_steps:{args.accumulation_steps}")
+        logger.info(f"one_gpu_max_data_num_dict:{data_num_counter.one_gpu_max_data_num_dict}")
+        logger.info(f"one_gpu_data_num_per_step_dict:{data_num_counter.one_gpu_data_num_per_step_dict}")
+        logger.info(f"max_steps:{data_num_counter.max_step_dict}")
+    
     train_dataset_dict, val_dataset_dict = get_multi_task_data(args, train_dataset_name_dict, val_dataset_name_dict, src_tokenizer, tgt_tokenizer)
-    # each_task_collate_fn_dict = {key: dataset.datasets[0].dataset.collate_fn for key, dataset in train_dataset_dict.items()}
-    each_task_collate_fn_dict = {key: dataset.datasets[0].collate_fn for key, dataset in train_dataset_dict.items()}
-
+    each_task_collate_fn_dict = {key: dataset.datasets[0].dataset.collate_fn for key, dataset in train_dataset_dict.items()}
+    #each_task_collate_fn_dict = {key: dataset.datasets[0].collate_fn for key, dataset in train_dataset_dict.items()}
     train_loader = MultiTaskDataLoader4(
         train_dataset_dict,
-        batch_size_dict=batch_size_dict,
+        batch_size_dict=one_gpu_batch_size_dict,
         each_task_collate_fn_dict=each_task_collate_fn_dict,
-        multi_task_collate_fn=make_multi_task_collate_fn(src_tokenizer, tgt_tokenizer),
+        each_task_sample_num_dict=each_task_sample_num_dict,
         is_ddp=True,
         seed=args.seed,
         loader_drop_last=True,
@@ -146,9 +186,9 @@ def train():
     )
     val_loader = MultiTaskDataLoader4(
         val_dataset_dict,
-        batch_size_dict=batch_size_dict,
+        batch_size_dict=one_gpu_batch_size_dict,
         each_task_collate_fn_dict=each_task_collate_fn_dict,
-        multi_task_collate_fn=make_multi_task_collate_fn(src_tokenizer, tgt_tokenizer),
+        each_task_sample_num_dict=each_task_sample_num_dict,
         is_ddp=True,
         seed=args.seed,
         loader_drop_last=True,
@@ -158,6 +198,12 @@ def train():
         pin_memory=True,
     )
     ##--
+    
+    # train_dataset, val_dataset = get_data(args, src_tokenizer, tgt_tokenizer)
+    # if world_rank == 0:
+    #     logger.info(f'Train Dataset : {len(train_dataset)}, Val Dataset : {len(val_dataset)}')
+    # train_loader = get_distributed_dataloader(args, train_dataset, shuffle=True)
+    # val_loader = get_distributed_dataloader(args, val_dataset, shuffle=False)
 
     if 'Warmup' in args.lr_scheduler and args.num_steps is None:
         args.num_steps = args.num_epochs * len(train_loader)
@@ -170,7 +216,10 @@ def train():
                 if 'Epoch' in line:
                     if 'Train' in line:
                         loss_counter.add("train", float(line.split(',')[1].split(':')[-1].strip()))
-                        steps = int(line.split(',')[3].split(':')[-1].strip())
+                        if args.phase == 'classify':
+                            steps = int(line.split(',')[3].split(':')[-1].strip())
+                        else:
+                            steps = int(line.split(',')[2].split(':')[-1].strip())
                     elif 'Val' in line:
                         loss_counter.add("val", float(line.split(',')[1].split(':')[-1].strip()))
         min_val_loss = min(loss_counter.losses['val'])
@@ -188,56 +237,108 @@ def train():
     for epoch in range(args.start_epoch, args.num_epochs + 1):
         # 学習ループ
         train_loader.set_epoch(epoch)
-        image_mask_ratio = 0.0
-        if args.language_model_train:
-            model.module.language_model.train()
-        if args.image_model_train:
-            model.module.image_model.train()
+        if args.language_model_train: model.module.language_model.train()
+        if args.image_model_train: model.module.image_model.train()
         model.module.transformer.train()
         train_loss = torch.tensor(0.0).to(local_rank)
         if args.phase == 'classify':
             train_acc = torch.tensor(0.0).to(local_rank)
         train_count = torch.tensor(0).to(local_rank)
-        pbar = tqdm(total=int(np.ceil(len(train_loader) / args.accumulation_steps)), desc=f'Train (Epoch {epoch}/{args.num_epochs})', disable=(world_rank != 0))
-        for i, (src_images, tgt_images, src_texts, tgt_texts) in enumerate(train_loader):
-            src_images = src_images.to(local_rank, non_blocking=True)
-            # if args.phase == 'pretrain':
-            #     tgt_images = tgt_images.to(local_rank)
-            #     tgt_texts, _ = model.module.image_to_z(tgt_images)
-            if args.phase == 'classify':
-                src_inputs = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')  # ['pt', 'tf', 'np', 'jax']
-                src_texts = src_inputs['input_ids'].to(local_rank, non_blocking=True)
-                tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
-                tgt_attention_masks = None
-            else:
-                src_texts = src_texts.to(local_rank, non_blocking=True)
-                tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
-                tgt_attention_masks = torch.ones_like(tgt_texts, device=local_rank, dtype=torch.bool)
-                tgt_attention_masks[tgt_texts == 0] = 0
-            src_attention_masks = torch.ones_like(src_texts, device=local_rank, dtype=torch.bool)
-            src_attention_masks[src_texts == 0] = 0
+        pbar = tqdm(total=len(train_loader), desc=f'Train (Epoch {epoch}/{args.num_epochs})', disable=(world_rank != 0))
+        
 
-            loss, preds = model(src_images, src_texts, None, tgt_texts, tgt_attention_masks, image_mask_ratio=image_mask_ratio)
-            loss /= args.accumulation_steps
-            scaler.scale(loss).backward()
+        # accumulate_data_num_dict = {k:0 for k in one_gpu_data_num_per_step_dict.keys()}
+        # sample_max_data_flag = False
+        data_num_counter.reset()
+        
+        for i, samples in enumerate(train_loader):
+            # accumulate_data_num_dict = {k: v + one_gpu_data_num_per_step_dict[k] for k, v in accumulate_data_num_dict.items()}
+            # for task, data_num in one_gpu_max_data_num_dict.items():
+            #     if accumulate_data_num_dict[task] <= data_num:
+            #         continue
+            #     else:
+            #         if world_rank == 0:
+            #             logger.info(f"task:{task} one_gpu_max_data_num:{one_gpu_max_data_num_dict[task]} accumulate_data_num:{accumulate_data_num_dict[task]}")
 
-            train_loss += loss.item() * src_images.shape[0]
-            if args.phase == 'classify':
-                train_acc += torch.sum(preds == tgt_texts)
-            train_count += src_images.shape[0]
-
-            # args.accumulation_steps回の勾配を蓄積してから、optimizer.step()を呼び出す
-            if (i + 1) % args.accumulation_steps == 0 or i + 1 == len(train_loader):
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-                pbar.update(1)
+            #         sample_max_data_flag = True
+            #         break
+            # if sample_max_data_flag:
+            #     logger.info(f"stop step:{i+1} in {len(train_loader)}")
+            #     break
+            data_num_counter.update()
+            if data_num_counter.sample_max_data_flag:
+                for k in data_num_counter.one_gpu_max_data_num_dict.keys():
+                    if data_num_counter.accumulate_data_num_dict[k] > data_num_counter.one_gpu_max_data_num_dict[k]:
+                        if world_rank == 0:
+                            logger.info(f"task:{k} one_gpu_max_data_num:{data_num_counter.one_gpu_max_data_num_dict[k]} accumulate_data_num:{data_num_counter.accumulate_data_num_dict[k]}")
                 if world_rank == 0:
-                    steps += 1
-                    if use_wandb:
-                        wandb.log({"iter": steps, "iter/loss": loss.item(), "iter/lr": optimizer.param_groups[0]["lr"]})
-                if args.num_steps is not None:
-                    scheduler.step()
+                    logger.info(f"stop step:{i+1} in {len(train_loader)}")            
+                break
+            
+            # if i == 0 or i+1 == min(data_num_counter.max_step_dict.values()):
+            #     save_image_folder = os.path.join(args.result_dir, f"rank{world_rank}/epoch{epoch}_step{i}")
+            #     save_text_path = os.path.join(args.result_dir, f"rank{world_rank}/epoch{epoch}_step{i}.txt")
+            #     os.makedirs(save_image_folder, exist_ok=True)
+            #     os.makedirs(os.path.dirname(save_text_path), exist_ok=True)
+            #     with open(save_text_path, "w") as f:
+            #         index = 0
+            #         for src_images,tgt_images,src_texts,tgt_texts in samples:
+            #             for src_image,src_text,tgt_text in zip(src_images, src_texts, tgt_texts):
+            #                 index += 1
+            #                 src_image = get_natural_img(src_image, DATASET_MEAN, DATASET_STD)
+            #                 #src_image = torchvision.transforms.functional.to_pil_image(src_image)
+            #                 src_image.save(os.path.join(save_image_folder, f"{index}.png"))
+            #                 #print(src_text)
+            #                 src_text = src_tokenizer.decode(src_text,skip_special_tokens=False)
+            #                 tgt_text = tgt_tokenizer.decode(tgt_text,skip_special_tokens=False)
+            #                 f.write(f"index:{index}\n{src_text}\n{tgt_text}\n")
+                    
+                    
+            for src_images,tgt_images,src_texts,tgt_texts in samples:
+                src_images = src_images.to(local_rank, non_blocking=True)
+                # if args.phase == 'pretrain':
+                #     tgt_images = tgt_images.to(local_rank)
+                #     tgt_texts, _ = model.module.image_to_z(tgt_images)
+
+                if args.phase == 'pretrain':
+                    src_texts = src_texts.to(local_rank, non_blocking=True)
+                    tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
+                    tgt_attention_masks = torch.ones_like(tgt_texts, device=local_rank, dtype=torch.bool)
+                    tgt_attention_masks[tgt_texts == 0] = 0
+                else:
+                    src_inputs = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt') # ['pt', 'tf', 'np', 'jax']
+                    src_texts = src_inputs['input_ids'].to(local_rank, non_blocking=True)
+                    if args.phase == 'classify':
+                        tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
+                        tgt_attention_masks = None
+                    else:
+                        tgt_inputs = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')
+                        tgt_texts = tgt_inputs['input_ids'].to(local_rank, non_blocking=True)
+                        tgt_attention_masks = tgt_inputs['attention_mask'].to(local_rank, non_blocking=True) 
+                src_attention_masks = torch.ones_like(src_texts, device=local_rank, dtype=torch.bool)
+                src_attention_masks[src_texts == 0] = 0
+
+                loss, preds = model(src_images, src_texts, None, tgt_texts, tgt_attention_masks)
+                loss /= args.accumulation_steps
+                scaler.scale(loss).backward()
+
+                train_loss += loss.item() * src_images.shape[0]
+                if args.phase == 'classify':
+                    train_acc += torch.sum(preds == tgt_texts)
+                train_count += src_images.shape[0]
+
+            #     # args.accumulation_steps回の勾配を蓄積してから、optimizer.step()を呼び出す
+            # if (i + 1) % args.accumulation_steps == 0 or i + 1 == len(train_loader):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            pbar.update(1)
+            if world_rank == 0:
+                steps += 1
+                if use_wandb:
+                    wandb.log({"iter": steps, "iter/loss": loss.item(), "iter/lr": optimizer.param_groups[0]["lr"]})
+            if args.num_steps is not None:
+                scheduler.step()
 
         # 他のノードから集める
         dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
@@ -275,33 +376,37 @@ def train():
             val_acc = torch.tensor(0.0).to(local_rank)
         val_count = torch.tensor(0).to(local_rank)
         val_loop = tqdm(val_loader, desc=f'Val (Epoch {epoch}/{args.num_epochs})', disable=(world_rank != 0))
-        for src_images, tgt_images, src_texts, tgt_texts in val_loop:
-            with torch.no_grad():
-                src_images = src_images.to(local_rank, non_blocking=True)
-                # if args.phase == 'pretrain':
-                #    tgt_images = tgt_images.to(local_rank)
-                #    tgt_texts, _ = model.module.image_to_z(tgt_images)
-                if args.phase == 'classify':
-                    src_inputs = src_tokenizer(
-                        src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt'
-                    )  # ['pt', 'tf', 'np', 'jax']
-                    src_texts = src_inputs['input_ids'].to(local_rank, non_blocking=True)
-                    tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
-                    tgt_attention_masks = None
-                else:
-                    src_texts = src_texts.to(local_rank, non_blocking=True)
-                    tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
-                    tgt_attention_masks = torch.ones_like(tgt_texts, device=local_rank, dtype=torch.bool)
-                    tgt_attention_masks[tgt_texts == 0] = 0
-                src_attention_masks = torch.ones_like(src_texts, device=local_rank, dtype=torch.bool)
-                src_attention_masks[src_texts == 0] = 0
+        for samples in val_loop:
+            for src_images, tgt_images, src_texts, tgt_texts in samples:
+                with torch.no_grad():
+                    src_images = src_images.to(local_rank, non_blocking=True)
+                    # if args.phase == 'pretrain':
+                    #    tgt_images = tgt_images.to(local_rank)
+                    #    tgt_texts, _ = model.module.image_to_z(tgt_images)
+                    if args.phase == 'pretrain':
+                        src_texts = src_texts.to(local_rank, non_blocking=True)
+                        tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
+                        tgt_attention_masks = torch.ones_like(tgt_texts, device=local_rank, dtype=torch.bool)
+                        tgt_attention_masks[tgt_texts == 0] = 0
+                    else:
+                        src_inputs = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt') # ['pt', 'tf', 'np', 'jax']
+                        src_texts = src_inputs['input_ids'].to(local_rank, non_blocking=True)
+                        if args.phase == 'classify':
+                            tgt_texts = tgt_texts.to(local_rank, non_blocking=True)
+                            tgt_attention_masks = None
+                        else:
+                            tgt_inputs = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')
+                            tgt_texts = tgt_inputs['input_ids'].to(local_rank, non_blocking=True)
+                            tgt_attention_masks = tgt_inputs['attention_mask'].to(local_rank, non_blocking=True)
+                    src_attention_masks = torch.ones_like(src_texts, device=local_rank, dtype=torch.bool)
+                    src_attention_masks[src_texts == 0] = 0
 
-                loss, preds = model(src_images, src_texts, src_attention_masks, tgt_texts, tgt_attention_masks)
+                    loss, preds = model(src_images, src_texts, src_attention_masks, tgt_texts, tgt_attention_masks)
 
-                val_loss += loss.item() * src_images.shape[0]
-                if args.phase == 'classify':
-                    val_acc += torch.sum(preds == tgt_texts)
-                val_count += src_images.shape[0]
+                    val_loss += loss.item() * src_images.shape[0]
+                    if args.phase == 'classify':
+                        val_acc += torch.sum(preds == tgt_texts)
+                    val_count += src_images.shape[0]
 
         # 他のノードから集める
         dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
@@ -336,14 +441,31 @@ def train():
                     torch.save(optimizer.state_dict(), os.path.join(args.result_dir, f'epoch_{epoch}.optimizer'))
                     print(f'Model and Optimizer {epoch} saved')
 
-    if world_rank == 0:
+        if epoch == args.stop_epoch:
+            if world_rank == 0: 
+                logger.info(f'Train stoped at {epoch} epoch')
+            break
+            
+    if world_rank == 0: 
         loss_counter.plot_loss(args.result_dir)
         if use_wandb:
             wandb.finish()
 
 
 def wandb_init(args):
-    wandb.init(project=f"{args.phase}_" + "_".join(args.datasets), name=args.lr_scheduler if args.lr_scheduler != '' else 'wo_scheduler', config=args)
+    if args.phase == 'classify':
+        name = f'enc{args.transformer_num_layers}_{args.language_model_name.split("/")[-1]}'
+    else:
+        name = f'enc{args.transformer_num_layers}_dec{args.transformer_num_decoder_layers}_worldsize{args.world_size}'
+    if args.id is None:
+        args.id = wandb.util.generate_id()
+    wandb.init(
+        id=args.id,
+        project=f"{args.phase}_"+"_".join(args.datasets), 
+        name=name,
+        config=args,
+        resume=True if args.start_epoch > 1 else False
+    )
     wandb.define_metric("epoch")
     wandb.define_metric("iter")
     wandb.define_metric("iter/*", step_metric="iter")

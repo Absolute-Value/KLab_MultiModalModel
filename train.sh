@@ -4,12 +4,13 @@
 batch_size=32
 dataset="cc3m cc12m imagenet imagenet21k places365 redcaps sun397"
 
-epoch=20
+epoch=10
 
 enc=2
 dec=12
 
-torchrun --nnodes=1 --nproc_per_node=4 multi_task_train_p4.py \
+torchrun --nnodes=1 --nproc_per_node=4 train.py \
+        --id mt1yvmyv \
         --transformer_num_layers $enc \
         --transformer_num_decoder_layers $dec \
         --phase pretrain \
