@@ -13,10 +13,9 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from data import *
-from data.multi_task_dataloader import MultiTaskDataLoader, make_multi_task_collate_fn, get_multi_task_data
+from data.multi_task_dataloader import MultiTaskDataLoader1, get_multi_task_data, make_multi_task_collate_fn
 from models.model import MyModel
 from modules import *
-
 
 # def get_dataset_dict(args, dataset_name_dict: dict[str, List[str]], phase, src_tokenizer=None, tgt_tokenizer=None):
 #     dataset_dict = {
@@ -132,7 +131,7 @@ def train():
     # each_task_collate_fn_dict = {key: dataset.datasets[0].dataset.collate_fn for key, dataset in train_dataset_dict.items()}
     each_task_collate_fn_dict = {key: dataset.datasets[0].collate_fn for key, dataset in train_dataset_dict.items()}
 
-    train_loader = MultiTaskDataLoader(
+    train_loader = MultiTaskDataLoader1(
         train_dataset_dict,
         batch_size_dict=batch_size_dict,
         each_task_collate_fn_dict=each_task_collate_fn_dict,
@@ -145,7 +144,7 @@ def train():
         shuffle=True,
         pin_memory=True,
     )
-    val_loader = MultiTaskDataLoader(
+    val_loader = MultiTaskDataLoader1(
         val_dataset_dict,
         batch_size_dict=batch_size_dict,
         each_task_collate_fn_dict=each_task_collate_fn_dict,

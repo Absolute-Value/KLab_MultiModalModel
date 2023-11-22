@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import ConcatDataset, DataLoader, distributed
 
 sys.path.append('../')
-from data.multi_task_dataloader import MultiTaskDataLoader
+from data.multi_task_dataloader import MultiTaskDataLoader4
 
 
 # ユーザー関数定義
@@ -99,7 +99,7 @@ def parse_arguments():
     return args
 
 
-def get_logger(args, log_name='train.log'):
+def get_logger(args,world_rank, log_name='train.log'):
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s: %(message)s')
@@ -111,7 +111,7 @@ def get_logger(args, log_name='train.log'):
     logger.addHandler(sh)
 
     # ログのファイル出力先を設定
-    fh = logging.FileHandler(os.path.join(args.result_dir, log_name), mode='w')
+    fh = logging.FileHandler(os.path.join(args.result_dir,f"rank{world_rank}_{log_name}"), mode='w')
     fh.setLevel(logging.INFO)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
@@ -136,6 +136,7 @@ def get_optimizer(model, args):
 def train():
     dist.init_process_group("nccl")
     rank = dist.get_rank()
+    world_size = dist.get_world_size()
 
     args = parse_arguments()
     args.gpu_nums = torch.cuda.device_count()  # GPU数
@@ -150,7 +151,7 @@ def train():
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     # if rank == 0:
-    logger = get_logger(args)
+    logger = get_logger(args,rank)
     logger.info("make_logger")
 
     # create model
@@ -181,13 +182,28 @@ def train():
         }
         return dataset_dict
 
-    dataset_name_dict = {"taskA": ["1", "4"], "taskB": ["2"], "taskC": ["3", "5"]}
-    batch_size_dict = {"taskA": 10, "taskB": 20, "taskC": 10}
-    max_batch_size = 40
+    dataset_name_dict = {"taskA":["1","4"], #1:100, 4:500 = 600
+                "taskB":["2"], #2: 1100
+                "taskC":["3","5"]} # 3:300, 5:200 = 500
+    #inex1 20,40,20
+    #index25 500,1000,500
+
+    #gpu4台
+    #index1 80,160,80
+    #index5 400,800,400
+    #index6 480,960,480
+    one_gpu_batch_size_dict = {"taskA": 10, "taskB": 20, "taskC": 5}
+    sample_num_dict = {"taskA": 2, "taskB": 2, "taskC": 4}
+    max_data_num_dict = {"taskA": 400, "taskB": 1100, "taskC": 400}
+    one_gpu_max_data_num_dict = {k: v // world_size for k, v in max_data_num_dict.items()}
+    one_gpu_data_num_per_step_dict = {k: v * one_gpu_batch_size_dict[k] for k, v in sample_num_dict.items()}
+    
+
+    #max_batch_size = 40
     # dataset_name_dict = {"taskA": ["1", "3"], "taskB": ["2"]}
     # batch_size_dict = {"taskA": 15, "taskB": 50}
     # max_batch_size = 65
-    assert max_batch_size == sum([batch_size_dict[key] for key in batch_size_dict.keys()]), "batch_size_dictの合計がmax_batch_sizeと一致しません"
+    #assert max_batch_size == sum([batch_size_dict[key] for key in batch_size_dict.keys()]), "batch_size_dictの合計がmax_batch_sizeと一致しません"
     dataset_dict = get_data(dataset_name_dict)
 
     # def multi_task_collate_fn(sample):
@@ -198,8 +214,8 @@ def train():
     #     out_text_list = sample[2]
     #     return torch.stack(image_list), in_text_list, out_text_list
 
-    multi_dataloader = MultiTaskDataLoader(
-        dataset_dict, batch_size_dict, shuffle=True, loader_drop_last=True, sampler_drop_last=True, is_ddp=True, seed=0
+    multi_dataloader = MultiTaskDataLoader4(
+        dataset_dict, one_gpu_batch_size_dict, None, sample_num_dict,loader_drop_last=True, sampler_drop_last=True, is_ddp=True, seed=0,shuffle=False
     )  # multi_task_collate_fn=multi_task_collate_fn)
     min_step = len(multi_dataloader)
     max_step = max(multi_dataloader.step_list)
@@ -220,55 +236,79 @@ def train():
         # pbar = tqdm(total=int(np.ceil(min_step / args.accumulation_steps)), desc=f'Train (Epoch {epoch}/{args.num_epochs})', disable=(rank != 0))
 
         # すべてのiteratorを初期化する
-        for index, (image, in_text, out_text) in enumerate(multi_dataloader):
+        accumulate_data_num_dict = {k:0 for k in one_gpu_data_num_per_step_dict.keys()}
+        sample_max_data_flag = False
+        for index, samples in enumerate(multi_dataloader):
+
             step = index + 1
             prefix_text = f"epoch:{epoch} step:{step} rank:{rank} || "
 
-            image = image.to(device_id)
-            in_text = in_text.to(device_id)
-            out_text = out_text.to(device_id)
+            accumulate_data_num_dict = {k: v + one_gpu_data_num_per_step_dict[k] for k, v in accumulate_data_num_dict.items()}
+            for task, data_num in one_gpu_max_data_num_dict.items():
+                if accumulate_data_num_dict[task] <= data_num:
+                    continue
+                else:
+                    logger.info(f"{prefix_text} task:{task} one_gpu_max_data_num:{one_gpu_max_data_num_dict[task]} accumulate_data_num:{accumulate_data_num_dict[task]}")
+                    for image, in_text, out_text in samples:
+                        logger.info(f"{prefix_text}\nimage:{image.squeeze()} || \nin_text:{in_text.squeeze()} || \nout_text:{out_text.squeeze()}\n")
 
-            # データをlogで確認
-            sample_image_list = []
-            sample_in_list = []
-            sample_out_list = []
-            sample_num = 2  # 1バッチの中から何個サンプルするか
-            in_batch_index = 0  # バッチ中のindex
-            for batch_size in batch_size_dict.values():
-                sample_image_list.append(image[in_batch_index : in_batch_index + sample_num].flatten())
-                sample_in_list.append(in_text[in_batch_index : in_batch_index + sample_num].flatten())
-                sample_out_list.append(out_text[in_batch_index : in_batch_index + sample_num].flatten())
-                in_batch_index += batch_size
-            # for batch_size in batch_size_list:
-            #     in_batch_index += batch_size
-            #     sample_image_list.append(image[in_batch_index - sample_num : in_batch_index].flatten())
-            #     sample_in_list.append(in_text[in_batch_index - sample_num : in_batch_index].flatten())
-            #     sample_out_list.append(out_text[in_batch_index - sample_num : in_batch_index].flatten())
-            print_batch_size = f"batch_size = image:{image.shape} || in_text:{in_text.shape} || out_text:{out_text.shape}"
-            logger.info(f"{prefix_text}{print_batch_size}")
-            print_sample = f"image:{sample_image_list} || in_text:{sample_in_list} || out_text:{sample_out_list}"
-            logger.info(f"{prefix_text}{print_sample}")
+                    sample_max_data_flag = True
+                    break
+            if sample_max_data_flag:
+                break
 
-            # if step == min_step:
-            #     logger.info(f"full_image:{image} || full_in_text:{in_text} || full_out_text:{out_text}")
+            
+            
 
-            # if i % args.accumulation_steps == 0:
-            #     optimizer.zero_grad()
-            # src_images = src_images.to(device_id, non_blocking=True)
-            # # if args.pretrain:
-            # #     tgt_images = tgt_images.to(device_id)
-            # #     tgt_texts, _ = model.module.image_to_z(tgt_images)
-            # src_texts = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(
-            #     device_id, non_blocking=True
-            # )  # ['pt', 'tf', 'np', 'jax']
-            # tgt_texts = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(
-            #     device_id, non_blocking=True
-            # )  # ['pt', 'tf', 'np', 'jax']
+            for image, in_text, out_text in samples:
+                if step == 1 or step == min_step:
+                    logger.info(f"{prefix_text}\nimage:{image.squeeze()} || \nin_text:{in_text.squeeze()} || \nout_text:{out_text.squeeze()}\n")
+                image = image.to(device_id)
+                in_text = in_text.to(device_id)
+                out_text = out_text.to(device_id)
+                
 
-            out = model(image, in_text)
-            loss = criterion(out, out_text)
-            loss.backward()
-            optimizer.step()
+                # # データをlogで確認
+                # sample_image_list = []
+                # sample_in_list = []
+                # sample_out_list = []
+                # sample_num = 2  # 1バッチの中から何個サンプルするか
+                # in_batch_index = 0  # バッチ中のindex
+                # for batch_size in batch_size_dict.values():
+                #     sample_image_list.append(image[in_batch_index : in_batch_index + sample_num].flatten())
+                #     sample_in_list.append(in_text[in_batch_index : in_batch_index + sample_num].flatten())
+                #     sample_out_list.append(out_text[in_batch_index : in_batch_index + sample_num].flatten())
+                #     in_batch_index += batch_size
+                # # for batch_size in batch_size_list:
+                # #     in_batch_index += batch_size
+                # #     sample_image_list.append(image[in_batch_index - sample_num : in_batch_index].flatten())
+                # #     sample_in_list.append(in_text[in_batch_index - sample_num : in_batch_index].flatten())
+                # #     sample_out_list.append(out_text[in_batch_index - sample_num : in_batch_index].flatten())
+                # print_batch_size = f"batch_size = image:{image.shape} || in_text:{in_text.shape} || out_text:{out_text.shape}"
+                # logger.info(f"{prefix_text}{print_batch_size}")
+                # print_sample = f"image:{sample_image_list} || in_text:{sample_in_list} || out_text:{sample_out_list}"
+                # logger.info(f"{prefix_text}{print_sample}")
+
+                # if step == min_step:
+                #     logger.info(f"full_image:{image} || full_in_text:{in_text} || full_out_text:{out_text}")
+
+                # if i % args.accumulation_steps == 0:
+                #     optimizer.zero_grad()
+                # src_images = src_images.to(device_id, non_blocking=True)
+                # # if args.pretrain:
+                # #     tgt_images = tgt_images.to(device_id)
+                # #     tgt_texts, _ = model.module.image_to_z(tgt_images)
+                # src_texts = src_tokenizer(src_texts, padding="longest", max_length=args.max_source_length, return_tensors='pt')['input_ids'].to(
+                #     device_id, non_blocking=True
+                # )  # ['pt', 'tf', 'np', 'jax']
+                # tgt_texts = tgt_tokenizer(tgt_texts, padding="longest", max_length=args.max_target_length, return_tensors='pt')['input_ids'].to(
+                #     device_id, non_blocking=True
+                # )  # ['pt', 'tf', 'np', 'jax']
+
+                out = model(image, in_text)
+                loss = criterion(out, out_text)
+                loss.backward()
+                optimizer.step()
 
     #         loss /= args.accumulation_steps
     #         loss.backward()
