@@ -169,8 +169,6 @@ def train():
     
     args.accumulation_steps = sum(each_task_sample_num_dict.values()) #使用しない
     data_num_counter = DataNumCounter(max_data_num_dict,one_gpu_batch_size_dict,each_task_sample_num_dict,world_size)#epoch中断用のデータ数カウンター
-    # one_gpu_max_data_num_dict = {k: v // world_size for k, v in max_data_num_dict.items()}
-    # one_gpu_data_num_per_step_dict = {k: v * one_gpu_batch_size_dict[k] for k, v in each_task_sample_num_dict.items()}
     
     if world_rank == 0:
         logger.info(f"accumulation_steps:{args.accumulation_steps}")
@@ -210,11 +208,6 @@ def train():
     )
     ##--
     
-    # train_dataset, val_dataset = get_data(args, src_tokenizer, tgt_tokenizer)
-    # if world_rank == 0:
-    #     logger.info(f'Train Dataset : {len(train_dataset)}, Val Dataset : {len(val_dataset)}')
-    # train_loader = get_distributed_dataloader(args, train_dataset, shuffle=True)
-    # val_loader = get_distributed_dataloader(args, val_dataset, shuffle=False)
 
     if 'Warmup' in args.lr_scheduler and args.num_steps is None:
         args.num_steps = args.num_epochs * len(train_loader)
@@ -257,25 +250,10 @@ def train():
         train_count = torch.tensor(0).to(local_rank)
         pbar = tqdm(total=len(train_loader), desc=f'Train (Epoch {epoch}/{args.num_epochs})', disable=(world_rank != 0))
         
-
-        # accumulate_data_num_dict = {k:0 for k in one_gpu_data_num_per_step_dict.keys()}
-        # sample_max_data_flag = False
         data_num_counter.reset()
         
         for i, samples in enumerate(train_loader):
-            # accumulate_data_num_dict = {k: v + one_gpu_data_num_per_step_dict[k] for k, v in accumulate_data_num_dict.items()}
-            # for task, data_num in one_gpu_max_data_num_dict.items():
-            #     if accumulate_data_num_dict[task] <= data_num:
-            #         continue
-            #     else:
-            #         if world_rank == 0:
-            #             logger.info(f"task:{task} one_gpu_max_data_num:{one_gpu_max_data_num_dict[task]} accumulate_data_num:{accumulate_data_num_dict[task]}")
 
-            #         sample_max_data_flag = True
-            #         break
-            # if sample_max_data_flag:
-            #     logger.info(f"stop step:{i+1} in {len(train_loader)}")
-            #     break
             data_num_counter.update()
             if data_num_counter.sample_max_data_flag:
                 for k in data_num_counter.one_gpu_max_data_num_dict.keys():
@@ -286,6 +264,7 @@ def train():
                     logger.info(f"stop step:{i+1} in {len(train_loader)}")            
                 break
             
+            ##epoch毎の最初と最後のデータを出力
             # if i == 0 or i+1 == min(data_num_counter.max_step_dict.values()):
             #     save_image_folder = os.path.join(args.result_dir, f"rank{world_rank}/epoch{epoch}_step{i}")
             #     save_text_path = os.path.join(args.result_dir, f"rank{world_rank}/epoch{epoch}_step{i}.txt")
@@ -303,10 +282,11 @@ def train():
             #                 src_text = src_tokenizer.decode(src_text,skip_special_tokens=False)
             #                 tgt_text = tgt_tokenizer.decode(tgt_text,skip_special_tokens=False)
             #                 f.write(f"index:{index}\n{src_text}\n{tgt_text}\n")
+            ##----------------------------------------------------
                     
-            #勾配更新の前準備
             accumulation_sample_size = torch.tensor(0).long().to(local_rank)
             loss_per_step = 0
+            #累積数分の使用するデータをモデルに通して、勾配累積
             for src_images,tgt_images,src_texts,tgt_texts in samples:
                 src_images = src_images.to(local_rank, non_blocking=True)
                 # if args.phase == 'pretrain':
@@ -346,7 +326,7 @@ def train():
             # if (i + 1) % args.accumulation_steps == 0 or i + 1 == len(train_loader):
             #sum_loss/num_tokens
             
-
+            #勾配更新の前準備
             dist.all_reduce(accumulation_sample_size, op=dist.ReduceOp.SUM)
             grad_scale = world_size / accumulation_sample_size
             multiply_grad(optimizer, grad_scale)
@@ -407,7 +387,8 @@ def train():
         val_count = torch.tensor(0).to(local_rank)
         val_loop = tqdm(val_loader, desc=f'Val (Epoch {epoch}/{args.num_epochs})', disable=(world_rank != 0))
         for samples in val_loop:
-            accumulation_sample_size = 0
+            #勾配更新の前準備
+            accumulation_sample_size = torch.tensor(0).long().to(local_rank)
             for src_images, tgt_images, src_texts, tgt_texts in samples:
                 with torch.no_grad():
                     src_images = src_images.to(local_rank, non_blocking=True)
@@ -440,7 +421,6 @@ def train():
                         val_acc += torch.sum(preds == tgt_texts)
                     #val_count += src_images.shape[0]
                     
-            accumulation_sample_size = torch.tensor(accumulation_sample_size).to(local_rank)
             dist.all_reduce(accumulation_sample_size, op=dist.ReduceOp.SUM)
             val_count += accumulation_sample_size
 
